@@ -444,6 +444,13 @@ final class AppStoreConnectReviewService: Sendable {
             } else if let existing = existingReviews.byAppStoreConnectReviewID[result.reviewID] {
                 review = existing
                 review.reviewKey = reviewKey
+            } else if let existing = existingReviews.publicDuplicate(of: result) {
+                // The same review was already stored from the public feed under
+                // a different ID. Adopt it so the pane lists it once, now with
+                // its App Store Connect identity and reply support.
+                review = existing
+                review.reviewID = result.reviewID
+                review.reviewKey = reviewKey
             } else {
                 review = AppStorefrontReview(
                     appStoreID: result.appStoreID,
@@ -500,6 +507,33 @@ final class AppStoreConnectReviewService: Sendable {
     private struct ExistingReviews {
         let byReviewKey: [String: AppStorefrontReview]
         let byAppStoreConnectReviewID: [String: AppStorefrontReview]
+        let publicByContent: [String: AppStorefrontReview]
+
+        func publicDuplicate(of result: AppStorefrontReviewResult) -> AppStorefrontReview? {
+            publicByContent[Self.contentKey(
+                appStoreID: result.appStoreID,
+                storefront: result.storefront,
+                rating: result.rating,
+                title: result.title,
+                content: result.content
+            )]
+        }
+
+        static func contentKey(
+            appStoreID: Int64,
+            storefront: String,
+            rating: Int,
+            title: String,
+            content: String
+        ) -> String {
+            [
+                String(appStoreID),
+                StorefrontCatalog.normalizedStorefrontCode(storefront),
+                String(rating),
+                title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            ].joined(separator: "\u{1F}")
+        }
     }
 
     nonisolated private func fetchReviews(
@@ -534,9 +568,36 @@ final class AppStoreConnectReviewService: Sendable {
             reviews.append(contentsOf: try modelContext.fetch(descriptor))
         }
 
+        var publicReviews: [AppStorefrontReview] = []
+        if let appStoreID = results.first?.appStoreID {
+            let targetAppStoreID = appStoreID
+            let publicSourceRaw = AppStorefrontReviewSource.iTunesCustomerReviewsRSS.rawValue
+            let descriptor = FetchDescriptor<AppStorefrontReview>(
+                predicate: #Predicate { review in
+                    review.appStoreID == targetAppStoreID && review.sourceRaw == publicSourceRaw
+                }
+            )
+            publicReviews = try modelContext.fetch(descriptor)
+        }
+
         return ExistingReviews(
             byReviewKey: Dictionary(reviews.map { ($0.reviewKey, $0) }, uniquingKeysWith: { first, _ in first }),
-            byAppStoreConnectReviewID: Dictionary(reviews.map { ($0.reviewID, $0) }, uniquingKeysWith: { first, _ in first })
+            byAppStoreConnectReviewID: Dictionary(reviews.map { ($0.reviewID, $0) }, uniquingKeysWith: { first, _ in first }),
+            publicByContent: Dictionary(
+                publicReviews.map {
+                    (
+                        ExistingReviews.contentKey(
+                            appStoreID: $0.appStoreID,
+                            storefront: $0.storefront,
+                            rating: $0.rating,
+                            title: $0.title,
+                            content: $0.content
+                        ),
+                        $0
+                    )
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
         )
     }
 

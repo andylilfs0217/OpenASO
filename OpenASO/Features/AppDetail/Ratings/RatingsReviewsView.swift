@@ -57,7 +57,7 @@ struct RatingsReviewsView: View {
             storefrontCode: selectedStorefrontFilter.storefrontCode,
             cutoffDate: timeFrame.cutoffDate(relativeTo: .now),
             rating: ratingFilter.rating,
-            source: appStoreConnectStatus.usesAppStoreConnectReviews ? .appStoreConnect : nil,
+            source: nil,
             backgroundModelStore: backgroundModelStore
         )
     }

@@ -446,6 +446,71 @@ struct AppStoreConnectReviewServiceTests {
         #expect(requestCount == 1)
     }
 
+    @Test
+    func connectReviewMergesWithMatchingPublicReviewInsteadOfDuplicatingIt() throws {
+        let container = try makeModelContainer()
+        let modelContext = ModelContext(container)
+        let storeApp = makeStoreApp()
+        modelContext.insert(storeApp)
+        modelContext.insert(AppStorefrontReview(
+            appStoreID: storeApp.appStoreID,
+            storefront: "ca",
+            reviewID: "14826379690",
+            reviewerName: "Silwa Rose",
+            title: "Subscription is not worth it",
+            content: "Not worth the price.",
+            rating: 1,
+            reviewedAt: Date(timeIntervalSince1970: 1_000),
+            source: .iTunesCustomerReviewsRSS,
+            storeApp: storeApp
+        ))
+        try modelContext.save()
+
+        let stored = try makeService().upsert(
+            [
+                AppStorefrontReviewResult(
+                    appStoreID: storeApp.appStoreID,
+                    storefront: "CA",
+                    reviewID: "asc-999",
+                    reviewerName: "Silwa Rose",
+                    title: " Subscription is not worth it ",
+                    content: "not worth the price.",
+                    rating: 1,
+                    reviewedAt: Date(timeIntervalSince1970: 1_000),
+                    version: "2.3.0",
+                    source: .appStoreConnect,
+                    observedAt: Date(timeIntervalSince1970: 2_000),
+                    ascReviewID: "asc-999"
+                ),
+                AppStorefrontReviewResult(
+                    appStoreID: storeApp.appStoreID,
+                    storefront: "ca",
+                    reviewID: "asc-1000",
+                    reviewerName: "New Person",
+                    title: "Only in Connect",
+                    content: "Different review.",
+                    rating: 5,
+                    reviewedAt: Date(timeIntervalSince1970: 3_000),
+                    version: "2.3.0",
+                    source: .appStoreConnect,
+                    observedAt: Date(timeIntervalSince1970: 2_000),
+                    ascReviewID: "asc-1000"
+                )
+            ],
+            storeApp: storeApp,
+            in: modelContext
+        )
+        try modelContext.save()
+
+        let reviews = try modelContext.fetch(FetchDescriptor<AppStorefrontReview>())
+        #expect(stored == 1)
+        #expect(reviews.count == 2)
+        let merged = try #require(reviews.first { $0.title == "Subscription is not worth it" || $0.title == " Subscription is not worth it " })
+        #expect(merged.reviewID == "asc-999")
+        #expect(merged.ascReviewID == "asc-999")
+        #expect(merged.source == .appStoreConnect)
+    }
+
     private func makeService() -> AppStoreConnectReviewService {
         let store = AppStoreConnectCredentialStore(defaults: .previewSuiteForTests(), keychain: InMemoryKeychainService())
         return AppStoreConnectReviewService(
