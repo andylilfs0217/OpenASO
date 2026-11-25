@@ -252,6 +252,16 @@ struct KeywordMetricsSnapshot: Equatable, Sendable {
         )
     }
 
+    /// Swaps in the estimated difficulty computed from the keyword's top results.
+    func replacingDifficultyScore(_ score: Int) -> KeywordMetricsSnapshot {
+        KeywordMetricsSnapshot(
+            popularityScore: popularityScore,
+            difficultyScore: score,
+            updatedAt: updatedAt,
+            notes: notes
+        )
+    }
+
     static func map(
         for queryKeys: [String],
         in modelContext: ModelContext
@@ -489,6 +499,8 @@ struct KeywordWorkspaceRow: Identifiable, Equatable, Sendable {
     }
 
     var popularitySortValue: Int { displayedPopularityScore ?? -1 }
+
+    var difficultySortValue: Int { metrics?.difficultyScore ?? -1 }
 
     var positionSortValue: Int { currentRank ?? Int.max }
 

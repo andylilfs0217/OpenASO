@@ -1,3 +1,5 @@
+import Foundation
+import SwiftData
 import Testing
 @testable import OpenASO
 
@@ -590,4 +592,174 @@ private func makeResult(
         subtitle: subtitle,
         ratingCount: ratingCount
     )
+}
+
+// MARK: - Strength estimator (v2)
+
+struct KeywordStrengthDifficultyEstimatorTests {
+    private let now = Date(timeIntervalSince1970: 1_795_000_000)
+
+    @Test
+    func fieldOfTinyNewAppsScoresVeryLow() throws {
+        let estimate = try requireEstimate(strengthEstimate(
+            keyword: "toronto bus",
+            counts: [0, 2, 5, 1, 0, 3, 12, 0, 4, 1],
+            ageYears: 0.5,
+            stars: 4.0
+        ))
+        #expect(estimate.score <= 15)
+        #expect(estimate.algorithmIdentifier == "top10-strength")
+        #expect(estimate.algorithmVersion == 2)
+    }
+
+    @Test
+    func fieldOfEstablishedGiantsScoresVeryHigh() throws {
+        let estimate = try requireEstimate(strengthEstimate(
+            keyword: "vpn",
+            counts: [500_000, 200_000, 90_000, 70_000, 40_000, 30_000, 20_000, 9_000, 8_000, 6_000],
+            ageYears: 9,
+            stars: 4.7
+        ))
+        #expect(estimate.score >= 90)
+    }
+
+    @Test
+    func midSizedNicheFieldLandsBetween() throws {
+        let estimate = try requireEstimate(strengthEstimate(
+            keyword: "toronto bus",
+            counts: [800, 300, 120, 60, 40, 25, 15, 9, 4, 2],
+            ageYears: 3,
+            stars: 4.4
+        ))
+        #expect((25...50).contains(estimate.score))
+    }
+
+    @Test
+    func scoreRisesWithRatingVolumeAndAge() throws {
+        let weak = try requireEstimate(strengthEstimate(
+            keyword: "toronto bus", counts: Array(repeating: 20, count: 10), ageYears: 1, stars: 4.2
+        ))
+        let strong = try requireEstimate(strengthEstimate(
+            keyword: "toronto bus", counts: Array(repeating: 2_000, count: 10), ageYears: 6, stars: 4.2
+        ))
+        #expect(strong.score > weak.score)
+    }
+
+    @Test
+    func offTopicResultsAreDampedComparedWithOnTopicOnes() throws {
+        let onTopic = try requireEstimate(strengthEstimate(
+            keyword: "vpn", counts: Array(repeating: 50_000, count: 10), ageYears: 8, stars: 4.6
+        ))
+        let offTopic = try requireEstimate(strengthEstimate(
+            keyword: "zzyzx quark", counts: Array(repeating: 50_000, count: 10), ageYears: 8, stars: 4.6,
+            titlesMatchKeyword: false
+        ))
+        #expect(offTopic.score < onTopic.score)
+        #expect(offTopic.score >= Int(Double(onTopic.score) * 0.5))
+    }
+
+    @Test
+    func stillScoresWhenOnlyRatingCountsAreKnown() throws {
+        let results = (1...10).map {
+            KeywordDifficultyRankedResult(
+                position: $0, appStoreID: Int64($0), title: "vpn \($0)", ratingCount: 10_000
+            )
+        }
+        let estimate = try requireEstimate(
+            KeywordStrengthDifficultyEstimator.estimate(keyword: "vpn", rankedResults: results, now: now)
+        )
+        #expect(estimate.score >= 60)
+    }
+
+    @Test
+    func requiresRatingEvidence() {
+        let results = (1...10).map {
+            KeywordDifficultyRankedResult(position: $0, appStoreID: Int64($0), title: "vpn", ratingCount: nil)
+        }
+        guard case .unavailable(let unavailable) = KeywordStrengthDifficultyEstimator.estimate(
+            keyword: "vpn", rankedResults: results, now: now
+        ) else {
+            Issue.record("Expected unavailable")
+            return
+        }
+        #expect(unavailable.reason == .insufficientRatingEvidence)
+        #expect(unavailable.algorithmIdentifier == "top10-strength")
+    }
+
+    @MainActor
+    @Test
+    func rankingPageProducesStorablePayloadThatReadsBack() throws {
+        let items = (1...10).map { index in
+            SearchRankingItem(
+                position: index,
+                appStoreID: Int64(index),
+                bundleID: "com.example.\(index)",
+                name: "Subway Delays \(index)",
+                sellerName: "Seller \(index)",
+                releaseDate: now.addingTimeInterval(-3 * 365 * 86_400),
+                ratingCount: 1_000 / index,
+                averageRating: 4.5
+            )
+        }
+        let payload = EstimatedKeywordDifficultyPersistencePayload.make(
+            term: "subway delays",
+            storefront: "ca",
+            platform: .iphone,
+            queryKey: KeywordQuery.makeQueryKey(term: "subway delays", storefront: "ca", platform: .iphone),
+            page: SearchRankingPage(items: items, source: .iTunesFallback),
+            rankingFetchedAt: now,
+            computedAt: now
+        )
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+
+        let outcome = try EstimatedKeywordDifficultyStore.upsert(payload, in: context)
+        try context.save()
+
+        #expect(outcome == .inserted)
+        let loaded = try EstimatedKeywordDifficultyStore.snapshot(queryKey: payload.queryKey, in: context)
+        let snapshot = try #require(loaded)
+        #expect(snapshot.state == .estimated)
+        #expect(snapshot.algorithmIdentifier == "top10-strength")
+        #expect((snapshot.score ?? -1) > 0)
+    }
+
+    // MARK: Helpers
+
+    private func strengthEstimate(
+        keyword: String,
+        counts: [Int],
+        ageYears: Double,
+        stars: Double,
+        titlesMatchKeyword: Bool = true
+    ) -> KeywordDifficultyEstimation {
+        let release = now.addingTimeInterval(-ageYears * 365.25 * 86_400)
+        let results = counts.enumerated().map { index, count in
+            KeywordDifficultyRankedResult(
+                position: index + 1,
+                appStoreID: Int64(index + 1),
+                title: titlesMatchKeyword ? "\(keyword) \(index + 1)" : "Generic App \(index + 1)",
+                ratingCount: count,
+                averageRating: stars,
+                releaseDate: release,
+                sellerName: "Seller \(index + 1)"
+            )
+        }
+        return KeywordStrengthDifficultyEstimator.estimate(
+            keyword: keyword, rankedResults: results, now: now
+        )
+    }
+
+    private func requireEstimate(
+        _ estimation: KeywordDifficultyEstimation
+    ) throws -> EstimatedKeywordDifficulty {
+        guard case .estimated(let estimate) = estimation else {
+            throw StrengthEstimatorTestError.unavailable
+        }
+        return estimate
+    }
+}
+
+private enum StrengthEstimatorTestError: Error {
+    case unavailable
 }

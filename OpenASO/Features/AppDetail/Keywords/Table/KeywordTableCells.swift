@@ -90,6 +90,20 @@ struct KeywordStoreCell: View {
     }
 }
 
+struct KeywordDifficultyCell: View {
+    let row: KeywordWorkspaceRow
+
+    var body: some View {
+        MetricBarView(
+            value: row.metrics?.difficultyScore,
+            maxValue: 100,
+            colorScale: .lowGreenHighRed,
+            placeholder: "-"
+        )
+        .help("Estimated from how strong the top 10 ranking apps are (ratings, age, title match). Not an Apple metric.")
+    }
+}
+
 struct KeywordPopularityCell: View {
     let row: KeywordWorkspaceRow
     let requiresAppleAdsReconnect: Bool

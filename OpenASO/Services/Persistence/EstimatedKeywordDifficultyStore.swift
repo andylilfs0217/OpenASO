@@ -992,3 +992,125 @@ enum EstimatedKeywordDifficultyStore {
         )
     }
 }
+
+
+// MARK: - Ranking page adapter
+
+extension EstimatedKeywordDifficultyPersistencePayload {
+    /// Scores the top results of a freshly fetched ranking page and packages the
+    /// outcome for `EstimatedKeywordDifficultyStore`.
+    static func make(
+        term: String,
+        storefront: String,
+        platform: AppPlatform,
+        queryKey: String,
+        page: SearchRankingPage,
+        rankingFetchedAt: Date,
+        computedAt: Date
+    ) -> Self {
+        let estimation = KeywordStrengthDifficultyEstimator.estimate(
+            keyword: term,
+            searchResults: page.items,
+            now: computedAt
+        )
+        let result: EstimatedKeywordDifficultyPersistenceResult
+        let evidence: KeywordDifficultyEvidence
+        let algorithmIdentifier: String
+        let algorithmVersion: Int
+        let notes: [String]
+        switch estimation {
+        case .estimated(let estimate):
+            result = .estimated(
+                score: estimate.score,
+                confidenceScore: estimate.confidenceScore,
+                confidence: EstimatedKeywordDifficultyConfidence(rawValue: estimate.confidence.rawValue) ?? .low
+            )
+            evidence = estimate.evidence
+            algorithmIdentifier = estimate.algorithmIdentifier
+            algorithmVersion = estimate.algorithmVersion
+            notes = estimate.notes
+        case .unavailable(let unavailable):
+            result = .unavailable(
+                reason: EstimatedKeywordDifficultyUnavailableReason(rawValue: unavailable.reason.rawValue)
+                    ?? .insufficientResults
+            )
+            evidence = unavailable.evidence
+            algorithmIdentifier = unavailable.algorithmIdentifier
+            algorithmVersion = unavailable.algorithmVersion
+            notes = unavailable.notes
+        }
+
+        let limit = SearchRankingCrawl.fullKeywordRankingLimit
+        return Self(
+            queryKey: queryKey,
+            keyword: term,
+            storefront: storefront,
+            platform: platform,
+            result: result,
+            algorithmIdentifier: algorithmIdentifier,
+            algorithmVersion: algorithmVersion,
+            requestedResultLimit: limit,
+            providerResultCount: min(max(page.resultCount, evidence.consideredResultCount), limit),
+            evidence: EstimatedKeywordDifficultyEvidence(evidence),
+            rankingSource: page.source,
+            rankingFetchedAt: rankingFetchedAt,
+            computedAt: max(computedAt, rankingFetchedAt),
+            fallback: page.source == .iTunesFallback
+                ? EstimatedKeywordDifficultyFallbackProvenance(page.fallbackContext)
+                : nil,
+            notes: notes
+        )
+    }
+}
+
+extension EstimatedKeywordDifficultyEvidence {
+    init(_ evidence: KeywordDifficultyEvidence) {
+        self.init(
+            consideredResultCount: evidence.consideredResultCount,
+            ratedResultCount: evidence.ratedResultCount,
+            weightedRatingCoveragePercentage: evidence.weightedRatingCoveragePercentage,
+            maximumRatingCount: evidence.maximumRatingCount,
+            medianRatingCount: evidence.medianRatingCount,
+            ratingAuthorityScore: evidence.ratingAuthorityScore,
+            metadataSaturationScore: evidence.metadataSaturationScore,
+            resultEvidence: evidence.resultEvidence.map {
+                EstimatedKeywordDifficultyResultEvidence(
+                    position: $0.position,
+                    appStoreID: $0.appStoreID,
+                    title: $0.title,
+                    subtitle: $0.subtitle,
+                    ratingCount: $0.ratingCount,
+                    ratingAuthorityScore: $0.ratingAuthorityScore,
+                    titleTokenCoveragePercentage: $0.titleTokenCoveragePercentage,
+                    combinedTokenCoveragePercentage: $0.combinedTokenCoveragePercentage,
+                    metadataMatchScore: $0.metadataMatchScore,
+                    exactTitlePhraseMatch: $0.exactTitlePhraseMatch,
+                    exactSubtitlePhraseMatch: $0.exactSubtitlePhraseMatch
+                )
+            }
+        )
+    }
+}
+
+extension EstimatedKeywordDifficultyFallbackProvenance {
+    /// The store only accepts a fallback whose primary provider was the App Store
+    /// web provider; anything unrecorded is stored as an unspecified failure.
+    init(_ context: SearchRankingFailureContext?) {
+        switch context?.category {
+        case .transport(let code)?:
+            self.init(provider: .appStoreWeb, category: .transport, transportCode: code)
+        case .httpStatus(let status)? where (100 ... 599).contains(status):
+            self.init(provider: .appStoreWeb, category: .httpStatus, httpStatus: status)
+        case .response(let failure)?:
+            if let mapped = EstimatedKeywordDifficultyFallbackResponseFailure(rawValue: failure.rawValue) {
+                self.init(provider: .appStoreWeb, category: .response, responseFailure: mapped)
+            } else {
+                self.init(provider: .appStoreWeb, category: .other)
+            }
+        case .provider?:
+            self.init(provider: .appStoreWeb, category: .provider)
+        default:
+            self.init(provider: .appStoreWeb, category: .other)
+        }
+    }
+}

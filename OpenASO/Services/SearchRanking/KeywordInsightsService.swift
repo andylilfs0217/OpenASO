@@ -300,9 +300,23 @@ final class KeywordInsightsService {
                 queryKeys.contains(metrics.queryKey)
             }
         )
-        return try modelContext.fetch(descriptor).reduce(into: [:]) { result, metrics in
+        var result = try modelContext.fetch(descriptor).reduce(into: [String: KeywordMetricsSnapshot]()) { result, metrics in
             result[metrics.queryKey] = KeywordMetricsSnapshot(metrics)
         }
+        let difficulties = try EstimatedKeywordDifficultyStore.snapshots(
+            queryKeys: queryKeys,
+            in: modelContext
+        )
+        for (queryKey, difficulty) in difficulties {
+            guard difficulty.state == .estimated, let score = difficulty.score else { continue }
+            result[queryKey] = (result[queryKey] ?? KeywordMetricsSnapshot(
+                popularityScore: nil,
+                difficultyScore: nil,
+                updatedAt: difficulty.computedAt,
+                notes: nil
+            )).replacingDifficultyScore(score)
+        }
+        return result
     }
 
     private nonisolated static func fetchCrawls(

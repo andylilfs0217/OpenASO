@@ -433,7 +433,7 @@ final class RankingRefreshCoordinator: Sendable {
         let canonicalPageResult = pageResult.canonicalized(
             limit: SearchRankingCrawl.fullKeywordRankingLimit
         )
-        return try persistRankingPage(
+        let persisted = try persistRankingPage(
             canonicalPageResult,
             track: track,
             trackedApp: track.trackedApp,
@@ -441,6 +441,29 @@ final class RankingRefreshCoordinator: Sendable {
             rebuildDerivedStats: rebuildDerivedStats,
             catalogEvidenceAppStoreIDs: catalogEvidenceAppStoreIDs
         )
+        if persisted.appliedSharedObservation {
+            persistEstimatedDifficulty(for: canonicalPageResult, track: track, in: modelContext)
+        }
+        return persisted
+    }
+
+    /// Keeps the keyword table's Difficulty column current. Difficulty is derived
+    /// data, so a failure here must never fail the ranking refresh itself.
+    private func persistEstimatedDifficulty(
+        for pageResult: RankingRefreshPageResult,
+        track: TrackedAppKeyword,
+        in modelContext: ModelContext
+    ) {
+        let payload = EstimatedKeywordDifficultyPersistencePayload.make(
+            term: track.term,
+            storefront: track.storefront,
+            platform: track.platform,
+            queryKey: track.queryKey,
+            page: pageResult.page,
+            rankingFetchedAt: pageResult.searchedAt,
+            computedAt: pageResult.searchedAt
+        )
+        _ = try? EstimatedKeywordDifficultyStore.upsert(payload, in: modelContext)
     }
 
     @discardableResult

@@ -6,19 +6,28 @@ struct KeywordDifficultyRankedResult: Equatable, Sendable {
     let title: String
     let subtitle: String?
     let ratingCount: Int?
+    let averageRating: Double?
+    let releaseDate: Date?
+    let sellerName: String?
 
     init(
         position: Int,
         appStoreID: Int64,
         title: String,
         subtitle: String? = nil,
-        ratingCount: Int?
+        ratingCount: Int?,
+        averageRating: Double? = nil,
+        releaseDate: Date? = nil,
+        sellerName: String? = nil
     ) {
         self.position = position
         self.appStoreID = appStoreID
         self.title = title
         self.subtitle = subtitle
         self.ratingCount = ratingCount
+        self.averageRating = averageRating
+        self.releaseDate = releaseDate
+        self.sellerName = sellerName
     }
 
     init(searchResult: SearchRankingItem) {
@@ -27,7 +36,10 @@ struct KeywordDifficultyRankedResult: Equatable, Sendable {
             appStoreID: searchResult.appStoreID,
             title: searchResult.name,
             subtitle: searchResult.subtitle,
-            ratingCount: searchResult.ratingCount
+            ratingCount: searchResult.ratingCount,
+            averageRating: searchResult.averageRating,
+            releaseDate: searchResult.releaseDate,
+            sellerName: searchResult.sellerName
         )
     }
 }
@@ -181,7 +193,7 @@ enum KeywordDifficultyEstimator {
         ))
     }
 
-    private static func normalizedTopResults(
+    static func normalizedTopResults(
         _ results: [KeywordDifficultyRankedResult]
     ) -> [KeywordDifficultyRankedResult] {
         // Provider positions are not a unique key. Keep different apps that share
@@ -225,7 +237,7 @@ enum KeywordDifficultyEstimator {
         }.prefix(maximumResultCount))
     }
 
-    private static func makeResultEvidence(
+    static func makeResultEvidence(
         _ results: [KeywordDifficultyRankedResult],
         keywordTokens: [String]
     ) -> [KeywordDifficultyResultEvidence] {
@@ -273,7 +285,7 @@ enum KeywordDifficultyEstimator {
         }
     }
 
-    private static func makeEvidence(
+    static func makeEvidence(
         _ resultEvidence: [KeywordDifficultyResultEvidence]
     ) -> KeywordDifficultyEvidence {
         let ratedEvidence = resultEvidence.filter { $0.ratingCount != nil }
@@ -361,7 +373,7 @@ enum KeywordDifficultyEstimator {
         return false
     }
 
-    private static func tokens(_ value: String) -> [String] {
+    static func tokens(_ value: String) -> [String] {
         value
             .folding(
                 options: [.caseInsensitive, .diacriticInsensitive],
@@ -372,11 +384,11 @@ enum KeywordDifficultyEstimator {
             .map(String.init)
     }
 
-    private static func positionWeight(_ position: Int) -> Double {
+    static func positionWeight(_ position: Int) -> Double {
         Double(maximumResultCount - position + 1)
     }
 
-    private static func confidenceScore(
+    static func confidenceScore(
         consideredResultCount: Int,
         weightedRatingCoveragePercentage: Int
     ) -> Int {
@@ -385,7 +397,7 @@ enum KeywordDifficultyEstimator {
         return boundedScore(sqrt(sampleCoverage * ratingCoverage) * 100)
     }
 
-    private static func confidence(
+    static func confidence(
         for score: Int
     ) -> EstimatedKeywordDifficulty.Confidence {
         switch score {
@@ -415,7 +427,252 @@ enum KeywordDifficultyEstimator {
         ))
     }
 
-    private static func boundedScore(_ value: Double) -> Int {
+    static func boundedScore(_ value: Double) -> Int {
         Int(min(100, max(0, value)).rounded())
+    }
+}
+
+// MARK: - Strength-based estimator (v2)
+
+
+/// Estimates how hard it is to rank in the top results for a keyword by measuring
+/// how strong the apps that already rank there are.
+///
+/// Factor weights and curves were tuned on live top-10 App Store results (broad
+/// head terms such as "vpn" and "weather" scored 85-97, niche transit and timer
+/// phrases 45-75, and fields of tiny new apps below 15). They are heuristics,
+/// not an Apple metric.
+///
+///     factor            weight   per result   notes
+///     rating volume     35%      yes          log curve over rating count
+///     dominant players  25%      field        apps with 5,000+ ratings
+///     app age           13%      yes          years since release
+///     momentum          12%      yes          ratings per year of age
+///     average stars     10%      yes          only when 5+ ratings
+///     publisher mix      5%      field        distinct publishers
+///
+/// Factors with no data are dropped and the remaining weights renormalised. Title
+/// and subtitle match is not a strength factor of its own. It scales the result:
+/// when the top results barely mention the keyword the SERP is off-topic, so the
+/// score is damped down to 55% of its raw value.
+enum KeywordStrengthDifficultyEstimator {
+    static let algorithmIdentifier = "top10-strength"
+    static let algorithmVersion = 2
+
+    private enum Weight {
+        static let volume = 0.35
+        static let dominant = 0.25
+        static let age = 0.13
+        static let momentum = 0.12
+        static let rating = 0.10
+        static let publisher = 0.05
+    }
+
+    private static let volumeCurve: [(Double, Double)] = [
+        (10, 12), (100, 35), (1_000, 58), (10_000, 80), (100_000, 100)
+    ]
+    private static let momentumCurve: [(Double, Double)] = [
+        (10, 8), (100, 30), (1_000, 60), (10_000, 100)
+    ]
+    private static let ageCurve: [(Double, Double)] = [
+        (0.5, 8), (2, 35), (5, 65), (10, 100)
+    ]
+    private static let dominantRatingCount = 5_000
+    private static let minimumRatingsForAverage = 5
+    private static let dampingFloor = 0.55
+    private static let relevantTitleSaturation = 50.0
+    private static let secondsPerYear = 365.25 * 86_400
+
+    static func estimate(
+        keyword: String,
+        searchResults: [SearchRankingItem],
+        now: Date = Date()
+    ) -> KeywordDifficultyEstimation {
+        estimate(
+            keyword: keyword,
+            rankedResults: searchResults.map(KeywordDifficultyRankedResult.init(searchResult:)),
+            now: now
+        )
+    }
+
+    static func estimate(
+        keyword: String,
+        rankedResults: [KeywordDifficultyRankedResult],
+        now: Date = Date()
+    ) -> KeywordDifficultyEstimation {
+        let considered = KeywordDifficultyEstimator.normalizedTopResults(rankedResults)
+        let keywordTokens = KeywordDifficultyEstimator.tokens(keyword)
+        let resultEvidence = KeywordDifficultyEstimator.makeResultEvidence(
+            considered,
+            keywordTokens: keywordTokens
+        )
+        let evidence = KeywordDifficultyEstimator.makeEvidence(resultEvidence)
+
+        guard !keywordTokens.isEmpty else {
+            return unavailable(.emptyKeyword, evidence, "Estimated competition is unavailable because the keyword is empty.")
+        }
+        guard considered.count >= KeywordDifficultyEstimator.minimumResultCount else {
+            return unavailable(
+                .insufficientResults,
+                evidence,
+                "Estimated competition is unavailable until at least \(KeywordDifficultyEstimator.minimumResultCount) unique top-ten ranking results are available."
+            )
+        }
+        guard evidence.ratedResultCount >= KeywordDifficultyEstimator.minimumRatedResultCount else {
+            return unavailable(
+                .insufficientRatingEvidence,
+                evidence,
+                "Estimated competition is unavailable until at least \(KeywordDifficultyEstimator.minimumRatedResultCount) top-ten results include rating counts."
+            )
+        }
+
+        let factors = factorScores(
+            considered: considered,
+            resultEvidence: resultEvidence,
+            evidence: evidence,
+            now: now
+        )
+        let weighted: [(weight: Double, value: Double)] = [
+            (Weight.volume, factors.volume),
+            (Weight.dominant, factors.dominant),
+            (Weight.momentum, factors.momentum),
+            (Weight.rating, factors.rating),
+            (Weight.age, factors.age),
+            (Weight.publisher, factors.publisher)
+        ].compactMap { pair in pair.1.map { (pair.0, $0) } }
+        let totalWeight = weighted.reduce(0) { $0 + $1.weight }
+        let raw = weighted.reduce(0) { $0 + $1.weight * $1.value } / totalWeight
+        let relevance = factors.title.map { min(1, $0 / relevantTitleSaturation) } ?? 1
+        let score = KeywordDifficultyEstimator.boundedScore(
+            raw * (dampingFloor + (1 - dampingFloor) * relevance)
+        )
+
+        let confidenceScore = KeywordDifficultyEstimator.confidenceScore(
+            consideredResultCount: evidence.consideredResultCount,
+            weightedRatingCoveragePercentage: evidence.weightedRatingCoveragePercentage
+        )
+        let confidence = KeywordDifficultyEstimator.confidence(for: confidenceScore)
+
+        return .estimated(EstimatedKeywordDifficulty(
+            score: score,
+            confidenceScore: confidenceScore,
+            confidence: confidence,
+            algorithmIdentifier: algorithmIdentifier,
+            algorithmVersion: algorithmVersion,
+            evidence: evidence,
+            notes: [
+                "Heuristic estimate of how strong the apps ranking in the top ten are.",
+                "Weights: rating volume 35%, dominant apps 25%, age 13%, momentum 12%, stars 10%, publisher mix 5%. Off-topic results damp the score.",
+                "This is not Apple Ads difficulty, Search Popularity, or an Apple-provided metric.",
+                "Evidence confidence \(confidence.rawValue) (\(confidenceScore)/100): \(evidence.ratedResultCount) of \(evidence.consideredResultCount) sampled results included rating counts."
+            ]
+        ))
+    }
+
+    // MARK: - Factors
+
+    private struct FactorScores {
+        let volume: Double?
+        let dominant: Double?
+        let title: Double?
+        let momentum: Double?
+        let rating: Double?
+        let age: Double?
+        let publisher: Double?
+    }
+
+    private static func factorScores(
+        considered: [KeywordDifficultyRankedResult],
+        resultEvidence: [KeywordDifficultyResultEvidence],
+        evidence: KeywordDifficultyEvidence,
+        now: Date
+    ) -> FactorScores {
+        var volume: [(Int, Double)] = []
+        var momentum: [(Int, Double)] = []
+        var rating: [(Int, Double)] = []
+        var age: [(Int, Double)] = []
+
+        for result in considered {
+            if let count = result.ratingCount, count >= 0 {
+                volume.append((result.position, curve(Double(count), volumeCurve)))
+            }
+            let years = result.releaseDate.map { max(0.05, now.timeIntervalSince($0) / secondsPerYear) }
+            if let years {
+                age.append((result.position, curve(years, ageCurve)))
+                if let count = result.ratingCount, count >= 0 {
+                    momentum.append((result.position, curve(Double(count) / years, momentumCurve)))
+                }
+            }
+            if let count = result.ratingCount, count >= minimumRatingsForAverage,
+               let stars = result.averageRating, stars > 0
+            {
+                rating.append((result.position, min(100, max(0, (stars - 3.5) / 1.4 * 100))))
+            }
+        }
+
+        let ratedCounts = considered.compactMap { $0.ratingCount }.filter { $0 >= 0 }
+        let dominantCount = ratedCounts.filter { $0 >= dominantRatingCount }.count
+        let dominant = linear(Double(dominantCount), [(0, 0), (1, 35), (2, 60), (3, 80), (4, 100)])
+
+        let publishers = Set(considered.map { $0.sellerName ?? String($0.appStoreID) })
+        let publisher = Double(publishers.count) / Double(considered.count) * 100
+
+        return FactorScores(
+            volume: positionWeighted(volume),
+            dominant: dominant,
+            title: evidence.metadataSaturationScore.map(Double.init),
+            momentum: positionWeighted(momentum),
+            rating: positionWeighted(rating),
+            age: positionWeighted(age),
+            publisher: publisher
+        )
+    }
+
+    private static func positionWeighted(_ values: [(Int, Double)]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        let totalWeight = values.reduce(0) { $0 + KeywordDifficultyEstimator.positionWeight($1.0) }
+        guard totalWeight > 0 else { return nil }
+        return values.reduce(0) { $0 + KeywordDifficultyEstimator.positionWeight($1.0) * $1.1 } / totalWeight
+    }
+
+    /// Log-interpolates between calibration points; linear from zero up to the
+    /// first point and flat after the last.
+    private static func curve(_ value: Double, _ points: [(Double, Double)]) -> Double {
+        guard value > 0, let first = points.first, let last = points.last else { return 0 }
+        if value <= first.0 { return first.1 * value / first.0 }
+        if value >= last.0 { return last.1 }
+        for (lower, upper) in zip(points, points.dropFirst()) where value <= upper.0 {
+            let t = log(value / lower.0) / log(upper.0 / lower.0)
+            return lower.1 + t * (upper.1 - lower.1)
+        }
+        return last.1
+    }
+
+    private static func linear(_ value: Double, _ points: [(Double, Double)]) -> Double {
+        guard let first = points.first, let last = points.last else { return 0 }
+        if value <= first.0 { return first.1 }
+        if value >= last.0 { return last.1 }
+        for (lower, upper) in zip(points, points.dropFirst()) where value <= upper.0 {
+            let t = (value - lower.0) / (upper.0 - lower.0)
+            return lower.1 + t * (upper.1 - lower.1)
+        }
+        return last.1
+    }
+
+    private static func unavailable(
+        _ reason: KeywordDifficultyUnavailable.Reason,
+        _ evidence: KeywordDifficultyEvidence,
+        _ note: String
+    ) -> KeywordDifficultyEstimation {
+        .unavailable(KeywordDifficultyUnavailable(
+            reason: reason,
+            algorithmIdentifier: algorithmIdentifier,
+            algorithmVersion: algorithmVersion,
+            evidence: evidence,
+            notes: [
+                "This would be a heuristic estimate, not Apple Ads difficulty or an Apple-provided metric.",
+                note
+            ]
+        ))
     }
 }

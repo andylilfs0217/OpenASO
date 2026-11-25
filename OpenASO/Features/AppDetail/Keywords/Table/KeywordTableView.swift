@@ -486,29 +486,31 @@ private struct KeywordRowsTable: View {
 
     var body: some View {
         Table(rows, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("Keyword", value: \.keywordSortValue) { tableRow in
-                KeywordCell(row: tableRow.row)
-            }
-            .width(min: 160, ideal: 230)
-
-            TableColumn("Last updated", value: \.lastUpdatedSortValue) { tableRow in
-                KeywordLastUpdatedCell(row: tableRow.row)
-            }
-            .width(min: 92, ideal: 112, max: 132)
-
-            TableColumn("Country", value: \.storefrontSortValue) { tableRow in
-                KeywordStoreCell(row: tableRow.row)
-            }
-            .width(min: 100, ideal: 148)
-
-            if showsPlatformColumn {
-                TableColumn("Platform", value: \.platformSortValue) { tableRow in
-                    KeywordPlatformCell(platform: tableRow.row.track.platform)
+            Group {
+                TableColumn("Keyword", value: \KeywordTablePresentationRow.keywordSortValue) { tableRow in
+                    KeywordCell(row: tableRow.row)
                 }
-                .width(min: 92, ideal: 104, max: 116)
+                .width(min: 160, ideal: 230)
+
+                TableColumn("Last updated", value: \KeywordTablePresentationRow.lastUpdatedSortValue) { tableRow in
+                    KeywordLastUpdatedCell(row: tableRow.row)
+                }
+                .width(min: 92, ideal: 112, max: 132)
+
+                TableColumn("Country", value: \KeywordTablePresentationRow.storefrontSortValue) { tableRow in
+                    KeywordStoreCell(row: tableRow.row)
+                }
+                .width(min: 100, ideal: 148)
+
+                if showsPlatformColumn {
+                    TableColumn("Platform", value: \KeywordTablePresentationRow.platformSortValue) { tableRow in
+                        KeywordPlatformCell(platform: tableRow.row.track.platform)
+                    }
+                    .width(min: 92, ideal: 104, max: 116)
+                }
             }
 
-            TableColumn("Popularity", value: \.popularitySortValue) { tableRow in
+            TableColumn("Popularity", value: \KeywordTablePresentationRow.popularitySortValue) { tableRow in
                 KeywordPopularityCell(
                     row: tableRow.row,
                     requiresAppleAdsReconnect: requiresAppleAdsReconnect,
@@ -517,12 +519,17 @@ private struct KeywordRowsTable: View {
             }
             .width(min: 112, ideal: 124, max: 136)
 
-            TableColumn("Position", value: \.positionSortValue) { tableRow in
+            TableColumn("Difficulty", value: \KeywordTablePresentationRow.difficultySortValue) { tableRow in
+                KeywordDifficultyCell(row: tableRow.row)
+            }
+            .width(min: 100, ideal: 112, max: 124)
+
+            TableColumn("Position", value: \KeywordTablePresentationRow.positionSortValue) { tableRow in
                 KeywordPositionCell(row: tableRow.row)
             }
             .width(min: 76, ideal: 88, max: 100)
 
-            TableColumn("Trend", value: \.trendSortValue) { tableRow in
+            TableColumn("Trend", value: \KeywordTablePresentationRow.trendSortValue) { tableRow in
                 KeywordTrendButton(row: tableRow.row) {
                     presentRankingHistory(tableRow.row)
                 }
@@ -548,7 +555,7 @@ private struct KeywordRowsTable: View {
             }
             .width(min: 120, ideal: 180)
 
-            TableColumn("Chart", value: \.chartSelectionSortValue) { tableRow in
+            TableColumn("Chart", value: \KeywordTablePresentationRow.chartSelectionSortValue) { tableRow in
                 ChartSelectionButton(
                     isSelected: tableRow.isSelectedForChart,
                     setSelection: { isSelected in
@@ -573,6 +580,7 @@ struct KeywordTablePresentationRow: Identifiable, Equatable {
     var storefrontSortValue: String { row.storefrontSortValue }
     var platformSortValue: Int { row.track.platform.tableSortValue }
     var popularitySortValue: Int { row.popularitySortValue }
+    var difficultySortValue: Int { row.difficultySortValue }
     var positionSortValue: Int { row.positionSortValue }
     var trendSortValue: Int { row.trendSortValue }
     var chartSelectionSortValue: Int { isSelectedForChart ? 0 : 1 }
