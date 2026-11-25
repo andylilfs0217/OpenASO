@@ -9,34 +9,6 @@ struct ReviewsPageLoader: Sendable {
     let source: AppStorefrontReviewSource?
     let backgroundModelStore: BackgroundModelStore?
 
-    /// Which stored reviews the pane should list. Connected accounts show only
-    /// App Store Connect reviews, but until a sync has stored any, showing nothing
-    /// would hide the public reviews already saved for the app.
-    static func effectiveSource(
-        usesAppStoreConnect: Bool,
-        hasAppStoreConnectReviews: Bool?
-    ) -> AppStorefrontReviewSource? {
-        guard usesAppStoreConnect, hasAppStoreConnectReviews != false else { return nil }
-        return .appStoreConnect
-    }
-
-    /// True when at least one App Store Connect review is stored for the app,
-    /// whatever filters the pane currently applies.
-    static func hasAppStoreConnectReviews(
-        appStoreID: Int64,
-        backgroundModelStore: BackgroundModelStore?
-    ) async throws -> Bool {
-        let loader = ReviewsPageLoader(
-            appStoreID: appStoreID,
-            storefrontCode: nil,
-            cutoffDate: nil,
-            rating: nil,
-            source: .appStoreConnect,
-            backgroundModelStore: backgroundModelStore
-        )
-        return try await loader.count() > 0
-    }
-
     func load(request: PaginatedListPageRequest) async throws -> PaginatedListPage<AppStoreReviewValue> {
         guard let backgroundModelStore else {
             throw OpenASOError.providerUnavailable("Reviews are unavailable until the model store is ready.")

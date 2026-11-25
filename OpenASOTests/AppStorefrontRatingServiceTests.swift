@@ -792,64 +792,6 @@ struct ReviewsPageLoaderTests {
     }
 }
 
-@MainActor
-struct ReviewSourceFallbackTests {
-    @Test
-    func connectedAccountFallsBackToPublicReviewsUntilConnectReviewsSync() {
-        #expect(ReviewsPageLoader.effectiveSource(usesAppStoreConnect: true, hasAppStoreConnectReviews: true) == .appStoreConnect)
-        #expect(ReviewsPageLoader.effectiveSource(usesAppStoreConnect: true, hasAppStoreConnectReviews: nil) == .appStoreConnect)
-        #expect(ReviewsPageLoader.effectiveSource(usesAppStoreConnect: true, hasAppStoreConnectReviews: false) == nil)
-        #expect(ReviewsPageLoader.effectiveSource(usesAppStoreConnect: false, hasAppStoreConnectReviews: true) == nil)
-    }
-
-    @Test
-    func detectsStoredAppStoreConnectReviewsIgnoringOtherSources() async throws {
-        let container = try makeRatingContainer()
-        let modelContext = ModelContext(container)
-        let storeApp = StoreApp(
-            appStoreID: 321,
-            bundleID: "com.example.app",
-            name: "Example",
-            sellerName: "Example Inc.",
-            iconURLString: nil,
-            defaultPlatform: .iphone
-        )
-        modelContext.insert(storeApp)
-        modelContext.insert(AppStorefrontReview(
-            appStoreID: storeApp.appStoreID,
-            storefront: "ca",
-            reviewID: "public-1",
-            reviewerName: "A",
-            title: "Public",
-            content: "Body",
-            rating: 5,
-            reviewedAt: Date(timeIntervalSince1970: 1_000),
-            source: .iTunesCustomerReviewsRSS,
-            storeApp: storeApp
-        ))
-        try modelContext.save()
-        let store = BackgroundModelStore(modelContainer: container)
-
-        #expect(try await ReviewsPageLoader.hasAppStoreConnectReviews(appStoreID: 321, backgroundModelStore: store) == false)
-
-        modelContext.insert(AppStorefrontReview(
-            appStoreID: storeApp.appStoreID,
-            storefront: "ca",
-            reviewID: "asc-1",
-            reviewerName: "B",
-            title: "Connect",
-            content: "Body",
-            rating: 4,
-            reviewedAt: Date(timeIntervalSince1970: 2_000),
-            source: .appStoreConnect,
-            storeApp: storeApp
-        ))
-        try modelContext.save()
-
-        #expect(try await ReviewsPageLoader.hasAppStoreConnectReviews(appStoreID: 321, backgroundModelStore: store) == true)
-    }
-}
-
 private func makeRatingRetryGate(base: any HTTPClient) -> ProviderRequestGate {
     let policy = ProviderRequestPolicy(
         minimumIntervalNanoseconds: 0,
