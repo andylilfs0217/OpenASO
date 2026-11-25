@@ -28,6 +28,24 @@ struct RatingsReviewsView: View {
     @State private var replyErrorMessage: String?
     @State private var isSendingReply = false
     @State private var canTranslateReviews = false
+    @State private var hasAppStoreConnectReviews: Bool?
+
+    private var reviewSource: AppStorefrontReviewSource? {
+        ReviewsPageLoader.effectiveSource(
+            usesAppStoreConnect: appStoreConnectStatus.usesAppStoreConnectReviews,
+            hasAppStoreConnectReviews: hasAppStoreConnectReviews
+        )
+    }
+
+    private var availabilityID: String {
+        [
+            String(appStoreID),
+            String(appStoreConnectStatus.usesAppStoreConnectReviews),
+            String(refreshToken),
+            String(backgroundModelStoreRevision),
+            String(localRevision)
+        ].joined(separator: "::")
+    }
 
     private var resetID: String {
         [
@@ -38,7 +56,7 @@ struct RatingsReviewsView: View {
             ratingFilter.resetKey,
             String(refreshToken),
             String(backgroundModelStoreRevision),
-            String(appStoreConnectStatus.usesAppStoreConnectReviews),
+            String(reviewSource?.rawValue ?? "all"),
             String(localRevision)
         ].joined(separator: "::")
     }
@@ -57,7 +75,7 @@ struct RatingsReviewsView: View {
             storefrontCode: selectedStorefrontFilter.storefrontCode,
             cutoffDate: timeFrame.cutoffDate(relativeTo: .now),
             rating: ratingFilter.rating,
-            source: appStoreConnectStatus.usesAppStoreConnectReviews ? .appStoreConnect : nil,
+            source: reviewSource,
             backgroundModelStore: backgroundModelStore
         )
     }
@@ -155,6 +173,9 @@ struct RatingsReviewsView: View {
             .frame(width: 520)
             .frame(minHeight: 360)
         }
+        .task(id: availabilityID) {
+            await loadAppStoreConnectAvailability()
+        }
         .task(id: resetID) {
             await loadTotalReviewCount(loader)
         }
@@ -185,10 +206,20 @@ struct RatingsReviewsView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .padding(.top, 14)
         case .owned:
-            Label("App Store Connect reviews enabled", systemImage: "checkmark.circle.fill")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.green)
+            if hasAppStoreConnectReviews == false {
+                Label(
+                    "App Store Connect is connected, but no reviews have synced from it yet. Showing public reviews. Refresh to sync.",
+                    systemImage: "info.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 .padding(.top, 14)
+            } else {
+                Label("App Store Connect reviews enabled", systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .padding(.top, 14)
+            }
         case .publicOnly(let message):
             Label("Public reviews only. \(message)", systemImage: "info.circle")
                 .font(.caption)
@@ -248,6 +279,18 @@ struct RatingsReviewsView: View {
             }
             translatingReviewKeys.remove(review.reviewKey)
         }
+    }
+
+    @MainActor
+    private func loadAppStoreConnectAvailability() async {
+        guard appStoreConnectStatus.usesAppStoreConnectReviews else {
+            hasAppStoreConnectReviews = nil
+            return
+        }
+        hasAppStoreConnectReviews = try? await ReviewsPageLoader.hasAppStoreConnectReviews(
+            appStoreID: appStoreID,
+            backgroundModelStore: backgroundModelStore
+        )
     }
 
     @MainActor
